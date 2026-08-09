@@ -1,0 +1,228 @@
+name: Build Rust toolchain
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "rust-version.txt"
+      - ".github/workflows/build-toolchain.yml"
+      - "scripts/install-toolchain.sh"
+      - "scripts/verify-toolchain.sh"
+  schedule:
+    # Refresh weekly so artifacts do not permanently expire (90-day retention).
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Package official toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      rust_version: ${{ steps.meta.outputs.rust_version }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read pinned Rust version
+        id: ver
+        run: |
+          set -euo pipefail
+          V=$(tr -d '[:space:]' < rust-version.txt)
+          if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "Invalid rust-version.txt: $V" >&2
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Pinned Rust version: $V"
+
+      - name: Install rustup + exact toolchain
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$V" --profile minimal
+          # shellcheck disable=SC1091
+          source "$HOME/.cargo/env"
+          rustup component add rustfmt clippy rust-docs
+          rustup show
+          rustc -Vv
+          cargo -V
+
+      - name: Package complete sysroot as tar.gz
+        id: pack
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source "$HOME/.cargo/env"
+          V="${{ steps.ver.outputs.version }}"
+          SYSROOT=$(rustc --print sysroot)
+          echo "sysroot=$SYSROOT"
+          ls -la "$SYSROOT"
+          ls -la "$SYSROOT/bin"
+
+          STAGE="${RUNNER_TEMP}/toolchain-stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+
+          # Copy COMPLETE sysroot preserving symlinks + mode bits
+          # Prefer rsync; fall back to cp -a
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -a --delete "$SYSROOT/" "$STAGE/"
+          else
+            cp -a "$SYSROOT/." "$STAGE/"
+          fi
+
+          # Ensure rustc/cargo are real toolchain binaries (not rustup proxies).
+          # Official toolchains under ~/.rustup/toolchains/<triple> use real bins.
+          if head -c 200 "$STAGE/bin/rustc" | grep -q rustup; then
+            echo "error: staged rustc looks like a rustup proxy" >&2
+            file "$STAGE/bin/rustc" || true
+            exit 1
+          fi
+
+          OUT="${RUNNER_TEMP}/artifact"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+
+          # Pack with POSIX metadata (symlinks + permissions)
+          tar -czf "$OUT/rust-toolchain.tar.gz" -C "$STAGE" .
+          ARCHIVE_SHA=$(sha256sum "$OUT/rust-toolchain.tar.gz" | awk '{print $1}')
+          HOST=$(rustc -vV | awk '/^host:/{print $2}')
+          RUSTC_VV=$(rustc -Vv | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
+          CARGO_V=$(cargo -V)
+          CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          RUSTC_VERSION=$(rustc --version | awk '{print $2}')
+
+          cat >"$OUT/manifest.json" <<EOF
+          {
+            "schema": 1,
+            "kind": "rust-toolchain",
+            "target": "${HOST}",
+            "rust_version": "${RUSTC_VERSION}",
+            "requested_version": "${V}",
+            "created_at": "${CREATED_AT}",
+            "git_sha": "${GITHUB_SHA}",
+            "host": "${HOST}",
+            "cargo_version": "${CARGO_V}",
+            "rustc_vv": $(rustc -Vv | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
+            "archive": "rust-toolchain.tar.gz",
+            "sha256": "${ARCHIVE_SHA}",
+            "sysroot_note": "Extract with tar -xzf; prepend <dest>/bin to PATH; no rustup required"
+          }
+          EOF
+
+          {
+            echo "${ARCHIVE_SHA}  rust-toolchain.tar.gz"
+            echo "$(sha256sum "$OUT/manifest.json" | awk '{print $1}')  manifest.json"
+          } >"$OUT/SHA256SUMS"
+
+          # Pretty-print / validate JSON
+          python3 -m json.tool "$OUT/manifest.json" >"$OUT/manifest.pretty.json"
+          mv "$OUT/manifest.pretty.json" "$OUT/manifest.json"
+
+          ls -lh "$OUT"
+          echo "archive_sha=$ARCHIVE_SHA" >> "$GITHUB_OUTPUT"
+          echo "out_dir=$OUT" >> "$GITHUB_OUTPUT"
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "rustc_version=$RUSTC_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set artifact metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          V="${{ steps.pack.outputs.rustc_version }}"
+          NAME="rust-toolchain-x86_64-unknown-linux-gnu-${V}"
+          echo "rust_version=$V" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Artifact name: $NAME"
+
+      - name: Upload toolchain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ steps.pack.outputs.out_dir }}/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Acceptance test on Ubuntu runner (extracted, no rustup)
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.pack.outputs.out_dir }}"
+          chmod +x scripts/install-toolchain.sh scripts/verify-toolchain.sh
+          # Isolate from any rustup on the runner PATH
+          TEST_ROOT="${RUNNER_TEMP}/test-toolchain"
+          rm -rf "$TEST_ROOT"
+          # Clear cargo/rustup from PATH for the verification subprocess
+          CLEAN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          env -i \
+            PATH="$CLEAN_PATH" \
+            HOME="$HOME" \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            bash -lc "
+              set -euo pipefail
+              ./scripts/install-toolchain.sh '$OUT/rust-toolchain.tar.gz' '$TEST_ROOT'
+              export PATH='$TEST_ROOT/bin:'\"\$PATH\"
+              command -v rustc
+              command -v cargo
+              rustc -Vv
+              # Must not be under ~/.cargo/bin or rustup
+              case \"\$(command -v rustc)\" in
+                *rustup*|*\\.cargo/bin*) echo 'error: resolved rustup/cargo bin' >&2; exit 1 ;;
+              esac
+              ./scripts/verify-toolchain.sh '$TEST_ROOT'
+            "
+
+  # Catch accidental Ubuntu-runner coupling by re-testing the artifact on Debian Bookworm.
+  debian-smoke:
+    name: Smoke on Debian Bookworm
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: debian:bookworm-slim
+    steps:
+      - name: Install extract tools + linker
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl unzip tar gzip gcc libc6-dev \
+            python3
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout (for helper scripts)
+        uses: actions/checkout@v4
+
+      - name: Download toolchain artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: /tmp/artifact
+
+      - name: Extract and compile on Debian
+        run: |
+          set -euo pipefail
+          chmod +x scripts/install-toolchain.sh scripts/verify-toolchain.sh
+          TEST_ROOT=/tmp/test-toolchain
+          rm -rf "$TEST_ROOT"
+          ./scripts/install-toolchain.sh /tmp/artifact/rust-toolchain.tar.gz "$TEST_ROOT"
+          export PATH="$TEST_ROOT/bin:$PATH"
+          rustc -Vv
+          cargo -V
+          cat >/tmp/hello.rs <<'RS'
+          fn main() {
+              println!("hello from rust on debian");
+          }
+          RS
+          rustc -O /tmp/hello.rs -o /tmp/hello
+          /tmp/hello | grep -q "hello from rust on debian"
+          ./scripts/verify-toolchain.sh "$TEST_ROOT"

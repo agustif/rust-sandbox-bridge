@@ -1,0 +1,19 @@
+# Local scratch / downloaded artifacts
+/artifacts/
+/tmp/
+/test-*/
+*.tar.gz
+!scripts/**
+.DS_Store
+target/
+**/Cargo.lock
+!examples/**
+.cargo/
+vendor/
+*.swp
+*.swo
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+.pytest_cache/

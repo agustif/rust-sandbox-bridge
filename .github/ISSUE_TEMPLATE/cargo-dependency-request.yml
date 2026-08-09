@@ -1,0 +1,83 @@
+name: Cargo dependency request
+description: Request an offline-vendored crates.io dependency bundle (maintainer approval required)
+title: "deps: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Request a **crates.io-only** dependency vendor bundle for offline use (e.g. ChatGPT Linux sandbox).
+
+        **Flow**
+        1. You open this issue with a machine-readable JSON request.
+        2. A maintainer reviews and applies the `approved-deps` label.
+        3. GitHub Actions resolves crates.io, runs `cargo vendor`, and uploads an artifact.
+        4. A bot comment links the workflow run and artifact name.
+
+        **Rules (schema v1)**
+        - crates.io only — no `git`, `path`, or custom registry URLs
+        - Max 40 root dependencies (including dev/build)
+        - Maintainer approval required before any networked vendor job runs
+
+  - type: textarea
+    id: request_json
+    attributes:
+      label: Dependency request JSON
+      description: Put a single fenced JSON object. ChatGPT/agents can generate this block.
+      render: json
+      value: |
+        ```json
+        {
+          "schema": 1,
+          "name": "example-request",
+          "rust_version": "same-as-rust-version.txt",
+          "dependencies": {
+            "serde": {
+              "version": "1",
+              "features": ["derive"]
+            },
+            "serde_json": "1"
+          },
+          "dev_dependencies": {},
+          "build_dependencies": {}
+        }
+        ```
+      placeholder: |
+        ```json
+        {
+          "schema": 1,
+          "name": "my-request",
+          "rust_version": "same-as-rust-version.txt",
+          "dependencies": {
+            "serde": { "version": "1", "features": ["derive"] },
+            "serde_json": "1"
+          },
+          "dev_dependencies": {},
+          "build_dependencies": {}
+        }
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes for maintainers (optional)
+      description: Why these crates are needed, known native deps, preferred features (e.g. vendored OpenSSL), etc.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ### Dependency object fields (per crate)
+
+        | Field | Type | Notes |
+        | --- | --- | --- |
+        | version | string | Cargo version req (`"1"`, `"1.0"`, `"=1.2.3"`, …) |
+        | features | string[] | Feature flags |
+        | default-features | bool | Set `false` to disable defaults |
+        | optional | bool | Optional dependency |
+        | package | string | Rename / alias real package name |
+
+        Shorthand: `"serde_json": "1"` is equivalent to `{"version": "1"}`.

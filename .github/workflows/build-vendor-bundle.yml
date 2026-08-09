@@ -1,0 +1,285 @@
+name: Build cargo vendor bundle
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+concurrency:
+  group: vendor-issue-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  vendor:
+    name: Vendor approved dependency request
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Only the approval label. Other labels are ignored.
+    if: github.event.label.name == 'approved-deps'
+
+    steps:
+      - name: Verify labeler has elevated repo permission
+        id: authz
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labeler = context.payload.sender.login;
+            const issue = context.payload.issue;
+            core.info(`Labeler: ${labeler}`);
+            core.info(`Issue #${issue.number} by ${issue.user.login}`);
+
+            // Defense in depth: only write/maintain/admin may approve.
+            const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: labeler,
+            });
+            const level = perm.permission; // admin | maintain | write | triage | read | none
+            core.info(`Permission level: ${level}`);
+            const allowed = new Set(['admin', 'maintain', 'write']);
+            if (!allowed.has(level)) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  '❌ **Vendor build refused**',
+                  '',
+                  `Label \`approved-deps\` was applied by \`${labeler}\` (permission: \`${level}\`).`,
+                  'Only collaborators with **write**, **maintain**, or **admin** may approve dependency requests.',
+                  '',
+                  `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                ].join('\n'),
+              });
+              // Remove the label so it can be re-applied by a trusted maintainer.
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  name: 'approved-deps',
+                });
+              } catch (e) {
+                core.warning(`Could not remove label: ${e}`);
+              }
+              core.setFailed(`Refusing approval from ${labeler} with permission ${level}`);
+              return;
+            }
+            core.setOutput('labeler', labeler);
+            core.setOutput('permission', level);
+
+      - name: Checkout trusted default branch only
+        uses: actions/checkout@v4
+        with:
+          # Never checkout forks or issue branches.
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Write issue body to file (data only)
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          # Pass through env (not shell interpolation of content in commands).
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          body = os.environ.get("ISSUE_BODY") or ""
+          Path("issue-body.txt").write_text(body, encoding="utf-8")
+          print(f"wrote issue-body.txt ({len(body)} bytes)")
+          PY
+
+      - name: Parse and validate dependency request
+        id: parse
+        run: |
+          set -euo pipefail
+          chmod +x scripts/parse-dependency-request.py
+          mkdir -p work/src
+          python3 scripts/parse-dependency-request.py \
+            issue-body.txt \
+            --rust-version-file rust-version.txt \
+            --out-request work/request.json \
+            --out-cargo-toml work/Cargo.toml \
+            --out-main work/src/main.rs
+          RUST_V=$(python3 -c 'import json; print(json.load(open("work/request.json"))["rust_version"])')
+          echo "rust_version=$RUST_V" >> "$GITHUB_OUTPUT"
+          echo "Parsed request for Rust $RUST_V"
+          cat work/request.json
+          cat work/Cargo.toml
+
+      - name: Install matching Rust toolchain
+        run: |
+          set -euo pipefail
+          V="${{ steps.parse.outputs.rust_version }}"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$V" --profile minimal
+          # shellcheck disable=SC1091
+          source "$HOME/.cargo/env"
+          rustc -Vv
+          cargo -V
+
+      - name: Resolve lockfile and create vendor bundle
+        id: vendor
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source "$HOME/.cargo/env"
+          chmod +x scripts/make-vendor-bundle.sh
+          cd work
+          # Networked resolution only — do not build crate build scripts as the product.
+          cargo generate-lockfile
+          cd ..
+          OUT="${RUNNER_TEMP}/vendor-out"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          ./scripts/make-vendor-bundle.sh \
+            work \
+            work/request.json \
+            "$OUT" \
+            "${{ github.event.issue.number }}"
+          ARTIFACT_NAME=$(cat "$OUT/artifact-name.txt")
+          LOCK_SHA=$(python3 -c 'import json; print(json.load(open("'"$OUT"'/manifest.json"))["lock_sha256"])')
+          ARCHIVE_SHA=$(python3 -c 'import json; print(json.load(open("'"$OUT"'/manifest.json"))["sha256"])')
+          echo "out_dir=$OUT" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "lock_sha=$LOCK_SHA" >> "$GITHUB_OUTPUT"
+          echo "archive_sha=$ARCHIVE_SHA" >> "$GITHUB_OUTPUT"
+          ls -lh "$OUT"
+
+      - name: CRITICAL offline vendor test
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source "$HOME/.cargo/env"
+          chmod +x scripts/verify-vendor.sh scripts/apply-vendor-bundle.sh scripts/parse-dependency-request.py
+          OUT="${{ steps.vendor.outputs.out_dir }}"
+          # Isolate cargo caches completely
+          export CARGO_HOME="${RUNNER_TEMP}/offline-cargo-home"
+          export RUSTUP_HOME="${RUNNER_TEMP}/offline-rustup-home"
+          mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"
+          rm -rf "$CARGO_HOME/registry" "$CARGO_HOME/git" || true
+
+          PROJ="${RUNNER_TEMP}/offline-proj"
+          rm -rf "$PROJ"
+          mkdir -p "$PROJ/src"
+          cp work/Cargo.toml "$PROJ/Cargo.toml"
+          cp work/src/main.rs "$PROJ/src/main.rs"
+          cp work/Cargo.lock "$PROJ/Cargo.lock" 2>/dev/null || cp "$OUT/Cargo.lock" "$PROJ/Cargo.lock"
+
+          ./scripts/apply-vendor-bundle.sh --force-lock "$OUT/cargo-vendor.tar.gz" "$PROJ"
+
+          export CARGO_NET_OFFLINE=true
+          # Drop network at OS level when permitted
+          if unshare -n true 2>/dev/null; then
+            echo "Running cargo build inside unshare -n (no network)"
+            unshare -n env \
+              CARGO_HOME="$CARGO_HOME" \
+              RUSTUP_HOME="$RUSTUP_HOME" \
+              CARGO_NET_OFFLINE=true \
+              PATH="$PATH" \
+              HOME="$HOME" \
+              bash -lc "cd '$PROJ' && cargo build --offline --locked && cargo run --offline --locked"
+          else
+            echo "unshare -n not permitted; using CARGO_NET_OFFLINE only"
+            (cd "$PROJ" && cargo build --offline --locked && cargo run --offline --locked)
+          fi
+          echo "OFFLINE BUILD OK"
+
+      - name: Upload vendor artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vendor.outputs.artifact_name }}
+          path: ${{ steps.vendor.outputs.out_dir }}/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Comment success on issue
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          ARTIFACT_NAME: ${{ steps.vendor.outputs.artifact_name }}
+          RUST_VERSION: ${{ steps.parse.outputs.rust_version }}
+          LOCK_SHA: ${{ steps.vendor.outputs.lock_sha }}
+          ARCHIVE_SHA: ${{ steps.vendor.outputs.archive_sha }}
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const artifact = process.env.ARTIFACT_NAME;
+            const rustVersion = process.env.RUST_VERSION;
+            const lockSha = process.env.LOCK_SHA;
+            const archiveSha = process.env.ARCHIVE_SHA;
+            const body = [
+              '## ✅ Vendor bundle ready',
+              '',
+              `| Field | Value |`,
+              `| --- | --- |`,
+              `| Workflow run | ${runUrl} |`,
+              `| Artifact name | \`${artifact}\` |`,
+              `| Rust version | \`${rustVersion}\` |`,
+              `| Lockfile SHA-256 | \`${lockSha}\` |`,
+              `| Archive SHA-256 | \`${archiveSha}\` |`,
+              '',
+              'This artifact is intended for **offline** builds inside the ChatGPT Linux sandbox',
+              '(or any environment without crates.io access).',
+              '',
+              '### ChatGPT / offline usage',
+              '',
+              '1. Download the Actions artifact ZIP for this run (via GitHub UI, API, or connector).',
+              '2. Unzip under `/mnt/data` (or any local path).',
+              '3. Extract `cargo-vendor.tar.gz` into your Cargo project (see `scripts/apply-vendor-bundle.sh`).',
+              '4. Build with:',
+              '',
+              '```bash',
+              'CARGO_NET_OFFLINE=true cargo build --offline --locked',
+              '```',
+              '',
+              'Actual compilation happens in the sandbox — this workflow only produces vendored **source**.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body,
+            });
+
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: ['deps-built'],
+              });
+            } catch (e) {
+              core.warning(`Could not add deps-built label: ${e}`);
+            }
+
+      - name: Comment failure on issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              '## ❌ Vendor bundle failed',
+              '',
+              `Workflow run: ${runUrl}`,
+              '',
+              'Common causes:',
+              '- Invalid or missing JSON request block in the issue body',
+              '- crates.io resolution failure (bad version / unknown crate / feature)',
+              '- Dependency count or validation limits exceeded',
+              '',
+              'Fix the request JSON and ask a maintainer to re-apply the `approved-deps` label.',
+              '',
+              'No sensitive data should appear here; check the workflow logs for details.',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body,
+            });

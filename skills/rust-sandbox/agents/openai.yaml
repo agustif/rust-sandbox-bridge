@@ -1,0 +1,3 @@
+interface:
+  display_name: "Rust Sandbox"
+  short_description: "Compile and run Rust/Cargo inside ChatGPT's Linux sandbox"
