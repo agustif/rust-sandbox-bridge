@@ -115,7 +115,9 @@ jobs:
             "rustc_vv": $(rustc -Vv | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
             "archive": "rust-toolchain.tar.gz",
             "sha256": "${ARCHIVE_SHA}",
-            "sysroot_note": "Extract with tar -xzf; prepend <dest>/bin to PATH; no rustup required"
+            "archive_bytes": $(wc -c <"$OUT/rust-toolchain.tar.gz" | tr -d ' '),
+            "sysroot_note": "Extract with tar -xzf; prepend <dest>/bin to PATH; no rustup required",
+            "bridge_repo": "${GITHUB_REPOSITORY}"
           }
           EOF
 
@@ -152,6 +154,25 @@ jobs:
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
+
+      - name: Job summary
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.pack.outputs.out_dir }}"
+          SIZE=$(du -h "$OUT/rust-toolchain.tar.gz" | awk '{print $1}')
+          {
+            echo "## Toolchain artifact"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Name | \`${{ steps.meta.outputs.artifact_name }}\` |"
+            echo "| Rust | \`${{ steps.meta.outputs.rust_version }}\` |"
+            echo "| Archive size | $SIZE |"
+            echo "| SHA-256 | \`${{ steps.pack.outputs.archive_sha }}\` |"
+            echo ""
+            echo "Transport: Actions artifact ZIP → GitHub connector → \`/mnt/data\`."
+            echo "Extract \`rust-toolchain.tar.gz\` (not the ZIP alone) to preserve modes/symlinks."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Acceptance test on Ubuntu runner (extracted, no rustup)
         run: |

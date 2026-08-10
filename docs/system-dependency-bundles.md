@@ -45,3 +45,9 @@ Workflow would:
 - Executing free-form shell from issues
 - Allowing unrestricted package names
 - Replacing the cargo vendor flow
+
+## Related
+
+Generic approved `apt` / `fetch` request types are sketched in
+[generic-artifact-requests.md](./generic-artifact-requests.md). Sandbox ingress
+doors are documented in [sandbox-doors.md](./sandbox-doors.md).

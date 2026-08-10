@@ -83,6 +83,8 @@ ARCHIVE_NAME=cargo-vendor.tar.gz
 tar -czf "$OUT_DIR/$ARCHIVE_NAME" -C "$STAGE" .
 ARCHIVE_SHA=$(sha256_file "$OUT_DIR/$ARCHIVE_NAME")
 
+ARCHIVE_BYTES=$(wc -c <"$OUT_DIR/$ARCHIVE_NAME" | tr -d ' ')
+
 cat >"$OUT_DIR/manifest.json" <<EOF
 {
   "schema": 1,
@@ -95,7 +97,9 @@ cat >"$OUT_DIR/manifest.json" <<EOF
   "lock_sha256": "${LOCK_SHA}",
   "archive": "${ARCHIVE_NAME}",
   "sha256": "${ARCHIVE_SHA}",
-  "cargo_vendor_flags": "--locked --versioned-dirs"
+  "archive_bytes": ${ARCHIVE_BYTES},
+  "cargo_vendor_flags": "--locked --versioned-dirs",
+  "offline_build": "CARGO_NET_OFFLINE=true cargo build --offline --locked"
 }
 EOF
 

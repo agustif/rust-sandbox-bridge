@@ -34,6 +34,20 @@ GitHub Actions is a **network bridge and artifact factory**. It is **not** where
 
 Public repo: [agustif/rust-sandbox-bridge](https://github.com/agustif/rust-sandbox-bridge)
 
+### Why Actions artifacts (not curl from the sandbox)
+
+The ChatGPT sandbox often has **no usable outbound DNS/HTTP**. The reliable
+large-binary door is:
+
+**GitHub Actions (has internet) → artifact ZIP → GitHub connector → `/mnt/data`.**
+
+Other doors (internal `pip`/`npm` mirrors, Library cache, `container.download`,
+repo contents API, human upload) are documented in
+[docs/sandbox-doors.md](./docs/sandbox-doors.md). Prefer mirrors when they work;
+use this bridge as the general fallback. A future generic `fetch` / `apt` /
+`cargo-vendor` request surface is sketched in
+[docs/generic-artifact-requests.md](./docs/generic-artifact-requests.md).
+
 ---
 
 ## What this repo provides
@@ -213,7 +227,15 @@ This repository ships a ChatGPT-oriented skill at
 BRIDGE_REPO=agustif/rust-sandbox-bridge
 ```
 
-and documents the full sandbox bootstrap → offline build flow.
+and documents the full sandbox bootstrap → offline build flow, including door
+ordering (mirrors → Library → Actions → manual).
+
+### Discover artifacts from a shell with `gh`
+
+```bash
+./scripts/discover-artifacts.sh toolchain
+./scripts/discover-artifacts.sh vendor 1
+```
 
 ---
 

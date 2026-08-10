@@ -321,15 +321,78 @@ def write_cargo_toml(request: dict[str, Any], path: Path) -> None:
 
 
 def write_smoke_main(request: dict[str, Any], path: Path) -> None:
-    """Generate a main.rs that references at least one non-optional dependency."""
+    """Generate a main.rs that actually exercises at least one non-optional dep."""
     deps = request["dependencies"]
-    usable = [
-        (name, dep)
+    usable = {
+        name: dep
         for name, dep in deps.items()
         if not dep.get("optional", False)
+    }
+    # Map request key → crates.io package (for rename support)
+    pkg = {name: dep.get("package", name) for name, dep in usable.items()}
+    has = set(pkg.values())
+
+    lines = [
+        "// Auto-generated smoke test — forces real use of requested crates.",
+        "#![allow(unused_imports, dead_code, unused_variables)]",
+        "",
     ]
-    lines = ["// Auto-generated smoke test — references requested crates.", ""]
-    if not usable:
+
+    # Prefer a meaningful serde + serde_json path when both are present.
+    if "serde" in has and "serde_json" in has:
+        serde_features = []
+        for name, dep in usable.items():
+            if pkg[name] == "serde":
+                serde_features = dep.get("features") or []
+        if "derive" in serde_features:
+            lines.extend(
+                [
+                    "use serde::{Deserialize, Serialize};",
+                    "",
+                    "#[derive(Serialize, Deserialize, Debug)]",
+                    "struct SmokePoint {",
+                    "    x: i32,",
+                    "    y: i32,",
+                    "}",
+                    "",
+                    "fn main() {",
+                    "    let p = SmokePoint { x: 1, y: 2 };",
+                    "    let s = serde_json::to_string(&p).expect(\"serialize\");",
+                    "    let q: SmokePoint = serde_json::from_str(&s).expect(\"deserialize\");",
+                    '    println!("vendor smoke ok: {s} -> {q:?}");',
+                    "}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "fn main() {",
+                    "    let v = serde_json::json!({\"ok\": true});",
+                    '    println!("vendor smoke ok: {v}");',
+                    "    let _ = std::any::type_name::<serde_json::Value>();",
+                    "}",
+                ]
+            )
+    elif "serde_json" in has:
+        lines.extend(
+            [
+                "fn main() {",
+                "    let v = serde_json::json!({\"ok\": true, \"n\": 1});",
+                '    println!("vendor smoke ok: {v}");',
+                "}",
+            ]
+        )
+    elif usable:
+        for name, dep in list(usable.items())[:8]:
+            crate = pkg[name].replace("-", "_")
+            alias = name.replace("-", "_")
+            lines.append(f"use {crate} as _{alias};")
+        lines.append("")
+        lines.append("fn main() {")
+        lines.append('    println!("vendor smoke ok");')
+        lines.append("    let _ = std::mem::size_of::<usize>();")
+        lines.append("}")
+    else:
         lines.extend(
             [
                 "fn main() {",
@@ -337,21 +400,7 @@ def write_smoke_main(request: dict[str, Any], path: Path) -> None:
                 "}",
             ]
         )
-    else:
-        # Reference crates via extern crate style is unnecessary on 2018+;
-        # use a simple type/path that forces linking for common crates.
-        # We only need cargo to resolve/build the graph; a trivial use is enough
-        # when the crate exports something at the root. Fall back to `use crate as _`.
-        for name, dep in usable[:8]:
-            crate = dep.get("package", name).replace("-", "_")
-            alias = name.replace("-", "_")
-            lines.append(f"use {crate} as _{alias};")
-        lines.append("")
-        lines.append("fn main() {")
-        lines.append('    println!("vendor smoke ok");')
-        # Force the uses to not be dead-code optimized away in some edge cases
-        lines.append("    let _ = std::mem::size_of::<usize>();")
-        lines.append("}")
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

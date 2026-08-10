@@ -50,6 +50,22 @@ The toolchain archive must contain a complete official Rust sysroot with real
 - Do not use Python execution tools for local build steps when container is
   available.
 
+## Ingress doors (ordering)
+
+Prefer the cheapest door that already has the bytes:
+
+1. **Already in the sandbox** (`rustc`/`cargo` on PATH, project-local `vendor/`).
+2. **Internal package mirrors** when relevant (not for official Rust toolchains).
+3. **ChatGPT Library** cached toolchain/vendor artifact from a prior session.
+4. **GitHub Actions artifacts** from `$BRIDGE_REPO` via the GitHub connector
+   (primary large-binary door — Actions has internet; sandbox often does not).
+5. **`container.download`** only opportunistically (MIME limits often reject
+   `.tar.xz` / `.deb`).
+6. **Repo contents API** for small text/scripts only — not 100MB+ toolchains.
+7. **Human upload** last resort.
+
+`web.run` / search are **information** doors, not byte transport.
+
 ## Workflow
 
 ### 1. Inspect the sandbox first

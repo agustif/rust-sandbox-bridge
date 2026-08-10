@@ -101,7 +101,15 @@ replace-with = "vendored-sources"
 
 [source.vendored-sources]
 directory = "vendor"
+
+[net]
+offline = true
 EOF
+fi
+
+# Ensure offline net config is present even if bundle config was older.
+if ! grep -q '^\[net\]' "$CONFIG_DEST" 2>/dev/null; then
+  printf '\n[net]\noffline = true\n' >>"$CONFIG_DEST"
 fi
 
 # Install vendor directory (replace if present)

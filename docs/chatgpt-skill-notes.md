@@ -10,6 +10,12 @@ Encode this procedure into a skill so sessions can obtain a toolchain and vendor
 - Host triple: `x86_64-unknown-linux-gnu`
 - Offline build: `CARGO_NET_OFFLINE=true cargo build --offline --locked`
 
+## Door priority
+
+See `docs/sandbox-doors.md`. In short: mirrors/Library first, then Actions
+artifact ZIP via GitHub connector into `/mnt/data`, then optional Library cache
+for later sandboxes.
+
 ## Toolchain steps
 
 1. List successful workflow runs for `build-toolchain.yml`.
