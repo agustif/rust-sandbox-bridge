@@ -44,48 +44,42 @@ case "$SRC" in
       exit 1
     fi
     ;;
-  *.tar.gz|*.tgz)
-    TGZ=$SRC
-    ;;
   *)
-    # Heuristic: try as tar.gz
     TGZ=$SRC
     ;;
 esac
 
-# Extract into dest. Archive root is expected to be the sysroot contents
-# (bin/, lib/, libexec/, share/, etc.) or a single top-level directory.
-tar -xzf "$TGZ" -C "$WORKDIR"
-# If single top-level dir, use it; else use all contents
-mapfile -t TOP < <(find "$WORKDIR" -mindepth 1 -maxdepth 1 ! -name zip -printf '%f\n' 2>/dev/null || true)
-# Portable fallback without -printf
-if [[ ${#TOP[@]} -eq 0 ]]; then
-  while IFS= read -r line; do TOP+=("$line"); done < <(find "$WORKDIR" -mindepth 1 -maxdepth 1 ! -name zip -exec basename {} \;)
-fi
+# Extract into workdir, then normalize into dest.
+mkdir -p "$WORKDIR/extract"
+tar -xzf "$TGZ" -C "$WORKDIR/extract"
 
-# Filter out the temp zip dir name if present
-FILTERED=()
-for t in "${TOP[@]:-}"; do
-  [[ "$t" == "zip" ]] && continue
-  FILTERED+=("$t")
-done
-
-if [[ ${#FILTERED[@]} -eq 1 && -d "$WORKDIR/${FILTERED[0]}" ]]; then
-  # Prefer rsync if available for fidelity; fall back to cp -a
-  if command -v rsync >/dev/null 2>&1; then
-    rsync -a "$WORKDIR/${FILTERED[0]}/" "$ABS_DEST/"
-  else
-    cp -a "$WORKDIR/${FILTERED[0]}/." "$ABS_DEST/"
-  fi
+# If the archive has a single top-level directory that contains bin/rustc, use it.
+# Otherwise treat the extract root as the sysroot.
+if [[ -x "$WORKDIR/extract/bin/rustc" ]]; then
+  SRC_ROOT="$WORKDIR/extract"
 else
-  # Contents were packed at root (bin, lib, ...)
-  for t in "${FILTERED[@]}"; do
-    if command -v rsync >/dev/null 2>&1; then
-      rsync -a "$WORKDIR/$t" "$ABS_DEST/"
-    else
-      cp -a "$WORKDIR/$t" "$ABS_DEST/"
+  # Count immediate children that look like a sysroot
+  candidates=()
+  for d in "$WORKDIR/extract"/*; do
+    [[ -d "$d" ]] || continue
+    if [[ -x "$d/bin/rustc" ]]; then
+      candidates+=("$d")
     fi
   done
+  if [[ ${#candidates[@]} -eq 1 ]]; then
+    SRC_ROOT="${candidates[0]}"
+  else
+    echo "error: could not locate bin/rustc inside archive" >&2
+    find "$WORKDIR/extract" -maxdepth 3 -type f -name rustc 2>/dev/null | head >&2 || true
+    exit 1
+  fi
+fi
+
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a "$SRC_ROOT/" "$ABS_DEST/"
+else
+  # cp -a preserves symlinks and modes on Linux/macOS
+  cp -a "$SRC_ROOT"/. "$ABS_DEST"/
 fi
 
 if [[ ! -x "$ABS_DEST/bin/rustc" ]]; then

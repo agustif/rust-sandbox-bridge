@@ -189,14 +189,20 @@ jobs:
     timeout-minutes: 30
     container:
       image: debian:bookworm-slim
+    defaults:
+      run:
+        # bookworm-slim jobs default to sh; scripts need bash.
+        shell: bash
     steps:
       - name: Install extract tools + linker
+        # First apt step must work under plain sh if bash is missing.
+        shell: sh
         run: |
-          set -euo pipefail
+          set -eu
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl unzip tar gzip gcc libc6-dev \
-            python3
+            bash ca-certificates curl unzip tar gzip gcc libc6-dev \
+            python3 findutils coreutils
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout (for helper scripts)
