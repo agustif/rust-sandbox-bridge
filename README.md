@@ -44,9 +44,9 @@ large-binary door is:
 Other doors (internal `pip`/`npm` mirrors, Library cache, `container.download`,
 repo contents API, human upload) are documented in
 [docs/sandbox-doors.md](./docs/sandbox-doors.md). Prefer mirrors when they work;
-use this bridge as the general fallback. A future generic `fetch` / `apt` /
-`cargo-vendor` request surface is sketched in
-[docs/generic-artifact-requests.md](./docs/generic-artifact-requests.md).
+use this bridge as the Rust-specialized fallback. For **arbitrary approved file
+transfers** (HTTPS fetch + SHA-256, future apt/OCI), use the sibling repo
+[agustif/sandbox-file-transfer-bridge](https://github.com/agustif/sandbox-file-transfer-bridge).
 
 ---
 
