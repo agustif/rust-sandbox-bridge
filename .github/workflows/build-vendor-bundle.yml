@@ -155,11 +155,20 @@ jobs:
           source "$HOME/.cargo/env"
           chmod +x scripts/verify-vendor.sh scripts/apply-vendor-bundle.sh scripts/parse-dependency-request.py
           OUT="${{ steps.vendor.outputs.out_dir }}"
-          # Isolate cargo caches completely
+
+          # Use the real toolchain sysroot bins (not rustup proxies). Isolate
+          # CARGO_HOME so no crates.io registry cache is reused.
+          SYSROOT=$(rustc --print sysroot)
+          export PATH="$SYSROOT/bin:/usr/bin:/bin"
           export CARGO_HOME="${RUNNER_TEMP}/offline-cargo-home"
-          export RUSTUP_HOME="${RUNNER_TEMP}/offline-rustup-home"
-          mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"
+          mkdir -p "$CARGO_HOME"
           rm -rf "$CARGO_HOME/registry" "$CARGO_HOME/git" || true
+          # Ensure we are not accidentally using rustup proxies
+          case "$(command -v cargo)" in
+            *rustup*|"$HOME/.cargo/bin"/*) echo "error: cargo is still a rustup proxy" >&2; exit 1 ;;
+          esac
+          rustc -V
+          cargo -V
 
           PROJ="${RUNNER_TEMP}/offline-proj"
           rm -rf "$PROJ"
@@ -176,7 +185,6 @@ jobs:
             echo "Running cargo build inside unshare -n (no network)"
             unshare -n env \
               CARGO_HOME="$CARGO_HOME" \
-              RUSTUP_HOME="$RUSTUP_HOME" \
               CARGO_NET_OFFLINE=true \
               PATH="$PATH" \
               HOME="$HOME" \
