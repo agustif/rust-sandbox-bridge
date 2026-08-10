@@ -163,10 +163,15 @@ jobs:
           export CARGO_HOME="${RUNNER_TEMP}/offline-cargo-home"
           mkdir -p "$CARGO_HOME"
           rm -rf "$CARGO_HOME/registry" "$CARGO_HOME/git" || true
-          # Ensure we are not accidentally using rustup proxies
-          case "$(command -v cargo)" in
-            *rustup*|"$HOME/.cargo/bin"/*) echo "error: cargo is still a rustup proxy" >&2; exit 1 ;;
-          esac
+          # Reject rustup shims in ~/.cargo/bin (sysroot paths under ~/.rustup are fine)
+          CARGO_BIN=$(command -v cargo)
+          RUSTC_BIN=$(command -v rustc)
+          echo "cargo=$CARGO_BIN"
+          echo "rustc=$RUSTC_BIN"
+          if [[ "$CARGO_BIN" == "$HOME/.cargo/bin/"* ]] || [[ "$RUSTC_BIN" == "$HOME/.cargo/bin/"* ]]; then
+            echo "error: resolved rustup proxy under ~/.cargo/bin" >&2
+            exit 1
+          fi
           rustc -V
           cargo -V
 
