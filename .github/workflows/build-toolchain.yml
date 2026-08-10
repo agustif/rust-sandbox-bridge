@@ -119,14 +119,14 @@ jobs:
           }
           EOF
 
+          # Pretty-print / validate JSON before hashing
+          python3 -m json.tool "$OUT/manifest.json" >"$OUT/manifest.pretty.json"
+          mv "$OUT/manifest.pretty.json" "$OUT/manifest.json"
+
           {
             echo "${ARCHIVE_SHA}  rust-toolchain.tar.gz"
             echo "$(sha256sum "$OUT/manifest.json" | awk '{print $1}')  manifest.json"
           } >"$OUT/SHA256SUMS"
-
-          # Pretty-print / validate JSON
-          python3 -m json.tool "$OUT/manifest.json" >"$OUT/manifest.pretty.json"
-          mv "$OUT/manifest.pretty.json" "$OUT/manifest.json"
 
           ls -lh "$OUT"
           echo "archive_sha=$ARCHIVE_SHA" >> "$GITHUB_OUTPUT"
