@@ -154,21 +154,6 @@ Vendored **source** includes normal transitive graphs, proc-macro crates, and `b
 
 The vendor job re-checks that the user who applied `approved-deps` has **write**, **maintain**, or **admin** on the repo.
 
-### Auto-approve hook (enabled)
-
-`.github/workflows/auto-approve-deps.yml` runs **every 5 minutes** (and on
-`workflow_dispatch`) and applies `approved-deps` to open dependency request
-issues that are not yet labeled `approved-deps` / `deps-built`.
-
-- **Skip if already working:** if any vendor bundle run is `queued` /
-  `in_progress` / waiting, the cycle does nothing (avoids pile-ups).
-- Comments on each auto-approved issue for an audit trail.
-- Disable or delete that workflow to restore **manual-only** approval.
-
-GitHub may delay scheduled workflows on free/public repos; 5 minutes is the
-target cadence, not a hard SLA.
-
----
 
 ## Discovery flow (for ChatGPT / agents)
 
