@@ -27,6 +27,7 @@ jobs:
     outputs:
       rust_version: ${{ steps.meta.outputs.rust_version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      channel: ${{ steps.ver.outputs.channel }}
 
     steps:
       - name: Checkout
@@ -56,10 +57,18 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
+          CHANNEL="${{ steps.ver.outputs.channel }}"
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$V" --profile minimal
           # shellcheck disable=SC1091
           source "$HOME/.cargo/env"
           rustup component add rustfmt clippy rust-docs
+          
+          # For nightly builds, also install miri, rust-src, and llvm-tools-preview
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            echo "Installing additional nightly components: miri rust-src llvm-tools-preview"
+            rustup component add miri rust-src llvm-tools-preview
+          fi
+          
           rustup show
           rustc -Vv
           cargo -V
@@ -111,6 +120,12 @@ jobs:
           RUSTC_COMMIT=$(rustc -vV | awk '/^commit-hash:/{print $2}')
           CHANNEL="${{ steps.ver.outputs.channel }}"
 
+          # List installed components for verification
+          COMPONENTS="[\"rustfmt\", \"clippy\", \"rust-docs\"]"
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            COMPONENTS="[\"rustfmt\", \"clippy\", \"rust-docs\", \"miri\", \"rust-src\", \"llvm-tools-preview\"]"
+          fi
+
           cat >"$OUT/manifest.json" <<EOF
           {
             "schema": 1,
@@ -125,6 +140,7 @@ jobs:
             "host": "${HOST}",
             "cargo_version": "${CARGO_V}",
             "rustc_vv": $(rustc -Vv | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
+            "components": ${COMPONENTS},
             "archive": "rust-toolchain.tar.gz",
             "sha256": "${ARCHIVE_SHA}",
             "archive_bytes": $(wc -c <"$OUT/rust-toolchain.tar.gz" | tr -d ' '),
@@ -198,6 +214,7 @@ jobs:
         run: |
           set -euo pipefail
           OUT="${{ steps.pack.outputs.out_dir }}"
+          CHANNEL="${{ steps.ver.outputs.channel }}"
           chmod +x scripts/install-toolchain.sh scripts/verify-toolchain.sh
           # Isolate from any rustup on the runner PATH
           TEST_ROOT="${RUNNER_TEMP}/test-toolchain"
@@ -219,7 +236,7 @@ jobs:
               case \"\$(command -v rustc)\" in
                 *rustup*|*\\.cargo/bin*) echo 'error: resolved rustup/cargo bin' >&2; exit 1 ;;
               esac
-              ./scripts/verify-toolchain.sh '$TEST_ROOT'
+              ./scripts/verify-toolchain.sh '$TEST_ROOT' '$CHANNEL'
             "
 
   # Catch accidental Ubuntu-runner coupling by re-testing the artifact on Debian Bookworm.
@@ -272,4 +289,4 @@ jobs:
           RS
           rustc -O /tmp/hello.rs -o /tmp/hello
           /tmp/hello | grep -q "hello from rust on debian"
-          ./scripts/verify-toolchain.sh "$TEST_ROOT"
+          ./scripts/verify-toolchain.sh "$TEST_ROOT" "${{ needs.build.outputs.channel }}"

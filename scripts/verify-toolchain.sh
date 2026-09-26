@@ -2,12 +2,16 @@
 # Verify an extracted (or archived) toolchain works without rustup.
 #
 # Usage:
-#   ./scripts/verify-toolchain.sh <toolchain-root-or-tar.gz>
+#   ./scripts/verify-toolchain.sh <toolchain-root-or-tar.gz> [channel]
+#
+# If channel is "nightly", also verifies miri, rust-src, and llvm-tools are present.
 set -euo pipefail
 
 SRC=${1:-}
+CHANNEL=${2:-stable}
+
 if [[ -z "$SRC" ]]; then
-  echo "Usage: $0 <toolchain-root-or-tar.gz>" >&2
+  echo "Usage: $0 <toolchain-root-or-tar.gz> [channel]" >&2
   exit 2
 fi
 
@@ -66,4 +70,39 @@ fn main() {
 RS
 (cd "$PROJ" && cargo build && cargo run)
 echo "cargo build/run: ok"
+
+# For nightly toolchains, verify additional components
+if [[ "$CHANNEL" == "nightly" ]]; then
+  echo "Verifying nightly-specific components..."
+  
+  # Check miri
+  if ! cargo miri --version >/dev/null 2>&1; then
+    echo "error: cargo miri not available" >&2
+    exit 1
+  fi
+  echo "cargo miri: ok ($(cargo miri --version))"
+  
+  # Check rust-src (library sources in sysroot)
+  SYSROOT=$(rustc --print sysroot)
+  RUST_SRC="$SYSROOT/lib/rustlib/src/rust/library"
+  if [[ ! -d "$RUST_SRC" ]]; then
+    echo "error: rust-src not found at $RUST_SRC" >&2
+    exit 1
+  fi
+  echo "rust-src: ok (found at $RUST_SRC)"
+  
+  # Check llvm-tools-preview (look for llvm-objdump or similar)
+  LLVM_TOOLS="$SYSROOT/lib/rustlib/x86_64-unknown-linux-gnu/bin"
+  if [[ ! -d "$LLVM_TOOLS" ]]; then
+    echo "error: llvm-tools directory not found at $LLVM_TOOLS" >&2
+    exit 1
+  fi
+  # Check for at least one LLVM tool
+  if ! ls "$LLVM_TOOLS"/llvm-* >/dev/null 2>&1; then
+    echo "error: no LLVM tools found in $LLVM_TOOLS" >&2
+    exit 1
+  fi
+  echo "llvm-tools-preview: ok (found in $LLVM_TOOLS)"
+fi
+
 echo "toolchain verification passed"
