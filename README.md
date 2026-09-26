@@ -59,6 +59,22 @@ transfers** (HTTPS fetch + SHA-256, future apt/OCI), use the sibling repo
 
 Pinned toolchain version: see [`rust-version.txt`](./rust-version.txt).
 
+### Toolchain channel support
+
+The bridge supports both **stable** and **nightly** Rust channels:
+
+- **Stable**: `1.97.1` or `1.97.1-beta.1` (semver format)
+- **Nightly**: `nightly-YYYY-MM-DD` (dated nightly for reproducibility)
+
+For nightly builds, the artifact name includes both the rustc version and the nightly date:
+`rust-toolchain-x86_64-unknown-linux-gnu-1.100.0-nightly-nightly-2026-09-26`
+
+The `manifest.json` includes:
+- `channel`: `"stable"` or `"nightly"`
+- `rustc_commit_hash`: The full commit SHA from `rustc -Vv`
+- `requested_version`: The exact value from `rust-version.txt`
+- `rust_version`: The actual rustc version (e.g., `1.100.0-nightly`)
+
 Artifacts are uploaded with **90-day** retention (GitHub’s practical maximum for public repos on standard Actions). A weekly scheduled toolchain rebuild refreshes the clock.
 
 ---
@@ -183,6 +199,9 @@ Predictable manifest keys:
   "kind": "rust-toolchain",
   "target": "x86_64-unknown-linux-gnu",
   "rust_version": "...",
+  "requested_version": "...",
+  "channel": "stable",
+  "rustc_commit_hash": "...",
   "created_at": "...",
   "archive": "rust-toolchain.tar.gz",
   "sha256": "..."

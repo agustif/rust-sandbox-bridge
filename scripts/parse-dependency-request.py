@@ -233,7 +233,9 @@ def validate_request(data: dict[str, Any], rust_version_file: str | None) -> dic
         if not rust_version_file:
             raise RequestError("rust_version_file required to resolve same-as-rust-version.txt")
         rust_version = Path(rust_version_file).read_text(encoding="utf-8").strip()
-    if not re.match(r"^\d+\.\d+\.\d+(-[\w.]+)?$", rust_version):
+    # Accept stable: 1.97.1 or 1.97.1-beta.1
+    # Accept nightly: nightly-2026-09-26
+    if not re.match(r"^(\d+\.\d+\.\d+(-[\w.]+)?|nightly-\d{4}-\d{2}-\d{2})$", rust_version):
         raise RequestError(f"invalid rust_version: {rust_version!r}")
 
     deps = normalize_dep_map(data.get("dependencies"), "dependencies")
